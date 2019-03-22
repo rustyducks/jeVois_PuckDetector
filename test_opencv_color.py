@@ -2,16 +2,16 @@
 import cv2
 import numpy as np
 import sys
-img = cv2.imread(sys.argv[1], cv2.IMREAD_COLOR)
+
+colors_thre = {"green": [(42, 70, 100), (70, 255, 255)], "blue": [(95, 100, 100), (120, 255, 255)], "red": [(0, 100, 100), (10, 255, 255)]}
+img = cv2.imread(sys.argv[2], cv2.IMREAD_COLOR)
 img2 = img.copy()
 
 blur = cv2.GaussianBlur(img, (7, 7), 0)
 
 hsv = cv2.cvtColor(blur, cv2.COLOR_BGR2HSV)
-l_green = (42, 70, 100)
-h_green = (70, 255, 255)
 
-mask = cv2.inRange(hsv, l_green, h_green)
+mask = cv2.inRange(hsv, colors_thre[sys.argv[1]][0], colors_thre[sys.argv[1]][1])
 
 res = cv2.bitwise_and(img2, img2, mask=mask)
 
