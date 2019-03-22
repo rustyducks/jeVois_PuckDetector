@@ -20,7 +20,7 @@ res_gray = cv2.cvtColor(res, cv2.COLOR_BGR2GRAY)
 kernel = np.ones((10,10),np.uint8)
 closed_gray = cv2.morphologyEx(res_gray, cv2.MORPH_CLOSE, kernel)
 
-contours, h = cv2.findContours(closed_gray, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+contours, h = cv2.findContours(closed_gray, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
 img_with_contours = img2.copy()
 cv2.drawContours(img_with_contours, contours, -1, (0, 255, 0), 3)
