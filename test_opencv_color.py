@@ -41,11 +41,22 @@ img_selected_contours = img2.copy()
 
 cv2.drawContours(img_selected_contours, filtered_contours, -1, (255, 0, 0), 3)
 
+puck_poses = []
+for c in filtered_contours:
+  M = cv2.moments(c)
+  puck_poses.append((int(M['m10']/M['m00']), int(M['m01']/M['m00'])))
+
+img_poses = img2.copy()
+for pt in puck_poses:
+  cv2.line(img_poses, (pt[0]-5, pt[1]), (pt[0]+5, pt[1]), (0, 255, 0))
+  cv2.line(img_poses, (pt[0], pt[1]-5), (pt[0], pt[1]+5), (0,255,0))
+
 cv2.imshow("plop", img2)
 cv2.imshow("plip", mask)
 cv2.imshow("plup", res)
 cv2.imshow("closed gray", closed_gray)
 cv2.imshow("plyp", img_with_contours)
 cv2.imshow("filtered", img_selected_contours)
+cv2.imshow("poses", img_poses)
 cv2.waitKey(0)
 cv2.destroyAllWindows()
