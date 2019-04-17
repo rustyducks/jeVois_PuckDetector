@@ -2,6 +2,7 @@ import libjevois as jevois
 import cv2
 import numpy as np
 
+
 ## Detects pucks for eurobot 2019
 #
 # Add some description of your module here.
@@ -27,8 +28,7 @@ class PuckDetector:
         self.timer = jevois.Timer("processing timer", 100, jevois.LOG_INFO)
         self.colors_thre = {"green": [(42, 70, 100), (70, 255, 255)], "blue": [(95, 100, 100), (120, 255, 255)],
                             "red": [(175, 100, 100), (180, 255, 255), (0, 100, 100), (10, 255, 255)]}
-        
-        
+
     def processNoUSB(self, inframe):
         # Get the next camera image (may block until it is captured) and here convert it to OpenCV BGR. If you need a
         # grayscale image, just use getCvGRAY() instead of getCvBGR(). Also supported are getCvRGB() and getCvRGBA():
@@ -39,38 +39,43 @@ class PuckDetector:
 
         pucks_color = self.find_pucks(inimg)
 
-        jevois.sendSerial("{}:{}:{}".format(self.serialize_puck_list(pucks_color["red"]), self.serialize_puck_list(pucks_color["green"]), self.serialize_puck_list(pucks_color["blue"])))
+        jevois.sendSerial("{}:{}:{}".format(self.serialize_puck_list(pucks_color["red"]),
+                                            self.serialize_puck_list(pucks_color["green"]),
+                                            self.serialize_puck_list(pucks_color["blue"])))
+
     # ###################################################################################################
     ## Process function with USB output
     def process(self, inframe, outframe):
         # Get the next camera image (may block until it is captured) and here convert it to OpenCV BGR. If you need a
         # grayscale image, just use getCvGRAY() instead of getCvBGR(). Also supported are getCvRGB() and getCvRGBA():
         inimg = inframe.getCvBGR()
-        
+
         # Start measuring image processing time (NOTE: does not account for input conversion time):
         self.timer.start()
 
         pucks_color, outimg = self.find_pucks(inimg, with_output=True)
 
-        jevois.sendSerial("{}:{}:{}".format(self.serialize_puck_list(pucks_color["red"]), self.serialize_puck_list(pucks_color["green"]), self.serialize_puck_list(pucks_color["blue"])))
+        jevois.sendSerial("{}:{}:{}".format(self.serialize_puck_list(pucks_color["red"]),
+                                            self.serialize_puck_list(pucks_color["green"]),
+                                            self.serialize_puck_list(pucks_color["blue"])))
         # Write a title:
-        cv2.putText(outimg, "JeVois PuckDetector", (3, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255))
-        
+        cv2.putText(outimg, "JeVois PuckDetector", (3, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255))
+
         # Write frames/s info from our timer into the edge map (NOTE: does not account for output conversion time):
         fps = self.timer.stop()
         height = outimg.shape[0]
         width = outimg.shape[1]
-        cv2.putText(outimg, fps, (3, height - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255))
-        
+        cv2.putText(outimg, fps, (3, height - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255))
+
         # Convert our output image to video output format and send to host over USB:
         outframe.sendCv(outimg)
 
     @staticmethod
     def serialize_puck_list(l):
-      s = ""
-      for pt in l:
-        s += str(pt[0]) + "," + str(pt[1]) + ";"
-      return s[:-1]
+        s = ""
+        for pt in l:
+            s += str(pt[0]) + "," + str(pt[1]) + ";"
+        return s[:-1]
 
     def find_pucks(self, inimg, with_output=False):
         blur = cv2.GaussianBlur(inimg, (7, 7), 0)
@@ -145,9 +150,8 @@ class PuckDetector:
                     cv2.line(output_img, (center_pose[0] - 5, center_pose[1]), (center_pose[0] + 5, center_pose[1]),
                              color)
                     cv2.line(output_img, (center_pose[0], center_pose[1] - 5), (center_pose[0], center_pose[1] + 5),
-                         color)
+                             color)
         if with_output:
             return pucks_color, output_img
         else:
             return pucks_color
-
