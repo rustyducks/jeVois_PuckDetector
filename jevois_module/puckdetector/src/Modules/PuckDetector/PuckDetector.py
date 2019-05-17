@@ -1,6 +1,7 @@
 import libjevois as jevois
 import cv2
 import numpy as np
+import math
 
 
 
@@ -22,16 +23,23 @@ import numpy as np
 # @restrictions None
 # @ingroup modules
 
-V2 = 400     # TODO changer ca ?
+V2 = 300     # TODO changer ca ?
 
-K_rc = np.array([[502.2993846775969, 0, 640/2],  # Param�tres intres�ques de la jevois calcul� � la main... Il faudrait la calibrer proprement pour avoir les vraies valeurs (fixe sur la dur�e de vie du module)
+K_rc = np.array([[502.2993846775969, 0, 640/2],  # Param?tres intres?ques de la jevois calcul? ? la main... Il faudrait la calibrer proprement pour avoir les vraies valeurs (fixe sur la dur?e de vie du module)
                 [0, 502.2993846775969, 480/2],
                 [0, 0, 1]])
-K_vc = np.array([[500, 0, 640/2],  # Param�tres intres�ques de la camera verticale finale (je sais pas trop ce qui est le mieux, pareil que la jevois vraie peut-�tre ?)
+K_vc = np.array([[500, 0, 640/2],  # Param?tres intres?ques de la camera verticale finale (je sais pas trop ce qui est le mieux, pareil que la jevois vraie peut-?tre ?)
                 [0, 500, 480/2],
                 [0, 0, 1]])
 K_vc_inv = np.linalg.inv(K_vc)
 n = np.array([[0, 0, -1]]).transpose()
+
+BASE_MIN_RADIUS = 70
+BASE_MAX_RADIUS = 100
+
+BORDERSIZE = 120
+H = 480
+W = 640
 
 class PuckDetector:
     # ###################################################################################################
@@ -45,17 +53,24 @@ class PuckDetector:
         self.mean_theshold = {"blue": 0.5, "green":0.5, "red": 0.3}
         self.color = {"blue": (255, 0, 0), "green": (0, 255, 0), "red": (0, 0, 255)}
         self.places_offset = [(0, 1, 0, 0), (1, 0, 0, 0), (1, 1, 0, 0)]
-        self.pos = (200, 0)   # (z, tilt), z: height above the table, tilt:looking down:0degrees, looking front: 90degrees (or 1.57 rd)
+        self.pos = (145, 0)   # (z, tilt), z: height above the atoms, tilt:looking down:0, looking front: ~315 (dynamixel units)
         self.H_rc_to_vc = self.compute_rotation_matrix()
+        self.minRadius = BASE_MIN_RADIUS
+        self.maxRadius = BASE_MAX_RADIUS
+        self.minDist = 2* self.minRadius
+        self.border_mask = self.get_border_mask()
     
     def compute_rotation_matrix(self):
         h, tilt = self.pos
-        theta = np.radians(tilt)
+        theta = np.radians(0.29 * tilt)
+        self.minRadius = int(BASE_MIN_RADIUS * math.cos(theta))
+        self.maxRadius = int(BASE_MAX_RADIUS * math.cos(theta))
+        self.minDist = int(2*self.minRadius)
         
-        Rvc_to_rc = np.array([[1, 0, 0],  # A recalculer chaque fois qu'on re�oit un nouveau theta
+        Rvc_to_rc = np.array([[1, 0, 0],  # A recalculer chaque fois qu'on re?oit un nouveau theta
                 [0, np.cos(theta), np.sin(theta)],
                 [0, -np.sin(theta), np.cos(theta)]])
-        t_vc_to_rc = -Rvc_to_rc.dot(np.array([[0, h * np.tan(theta), V2 - h]]).transpose())  # A recalculer chaque fois qu'on re�oit un nouveau theta ou une nouvelle hauteur
+        t_vc_to_rc = -Rvc_to_rc.dot(np.array([[0, h * np.tan(theta), V2 - h]]).transpose())  # A recalculer chaque fois qu'on re?oit un nouveau theta ou une nouvelle hauteur
         disp = Rvc_to_rc - (t_vc_to_rc.dot(n.transpose()) / V2)
         H_vc_to_rc = K_rc.dot(disp.dot(K_vc_inv))
         H_rc_to_vc = np.linalg.inv(H_vc_to_rc)
@@ -74,10 +89,11 @@ class PuckDetector:
     def parsePosMsg(self, args):
         z, tilt = args.split(" ")
         z, tilt = float(z), float(tilt)
-        if tilt > 60:
+        if tilt > 300:
             tilt = 0
         self.pos = (z, tilt)
         self.H_rc_to_vc = self.compute_rotation_matrix()
+        self.border_mask = self.get_border_mask()
         return "Position set at {}".format(self.pos)
 
     def processNoUSB(self, inframe):
@@ -130,16 +146,16 @@ class PuckDetector:
         return s
     
     def find_pucks(self, inimg, with_output=False):
-        inimg = self.trans(inimg)
-        bordersize = 120
-        img=cv2.copyMakeBorder(inimg, top=bordersize, bottom=bordersize, left=bordersize, right=bordersize, borderType= cv2.BORDER_CONSTANT, value=[0,0,0])
+        img = self.trans(inimg)
+        img=cv2.copyMakeBorder(img, top=BORDERSIZE, bottom=BORDERSIZE, left=BORDERSIZE, right=BORDERSIZE, borderType= cv2.BORDER_CONSTANT, value=[0,0,0])
+        
         h,w,ch=img.shape
         out = np.copy(img)
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         cannyHighThresh = 80
         cannyLowThresh = 20
         #canny = cv2.Canny(gray, cannyHighThresh, cannyLowThresh)
-        circles = cv2.HoughCircles(gray, cv2.HOUGH_GRADIENT, 1, 200, param1=cannyHighThresh, param2=cannyLowThresh, minRadius=120, maxRadius=180)
+        circles = cv2.HoughCircles(gray, cv2.HOUGH_GRADIENT, 1, self.minDist, param1=cannyHighThresh, param2=cannyLowThresh, minRadius=self.minRadius, maxRadius=self.maxRadius)
         pucks = []
         outImg = np.zeros((h,w, 3), np.uint8)
         outImg[0:h, 0:w] = img[0:h, 0:w]
@@ -149,10 +165,8 @@ class PuckDetector:
             circles = np.round(circles[0, :]).astype("int")
             for i, (x, y, r) in enumerate(circles):
                 mask = np.zeros_like(gray)          #will be the mask that define the atoms
-                mask_of_mask = np.zeros_like(gray)  #will be used to mask the borders on the previous mask
-                cv2.rectangle(mask_of_mask, (bordersize, bordersize), (h+bordersize, w+bordersize), (255), -1)  #mask that exclude the borders
                 cv2.circle(mask, (x,y), r, (255,255,255), -1)  #draw the detected circle on the mask
-                mask = cv2.bitwise_and(mask, mask, mask=mask_of_mask) #exclude the (black) borders from the mask
+                mask = cv2.bitwise_and(mask, mask, mask=self.border_mask) #exclude the (black) borders from the mask
                 
                 #jevois.LINFO("")
                 for d_color in self.colors_thre.keys():
@@ -188,6 +202,12 @@ class PuckDetector:
             return pucks, outImg
         else:
             return pucks
+    
+    def get_border_mask(self):
+        mask = np.ones((H,W, 1), np.uint8) * 255
+        mask = self.trans(mask)
+        mask = cv2.copyMakeBorder(mask, top=BORDERSIZE, bottom=BORDERSIZE, left=BORDERSIZE, right=BORDERSIZE, borderType= cv2.BORDER_CONSTANT, value=[0,0,0])
+        return mask
                 
     def trans(self, img):
         warped = cv2.warpPerspective(img, self.H_rc_to_vc, (640, 480))  # The magic happens here
