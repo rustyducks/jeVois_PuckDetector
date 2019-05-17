@@ -3,6 +3,7 @@ import cv2
 import numpy as np
 
 
+
 ## Detects pucks for eurobot 2019
 #
 # Add some description of your module here.
@@ -20,14 +21,64 @@ import numpy as np
 # @distribution Unrestricted
 # @restrictions None
 # @ingroup modules
+
+V2 = 400     # TODO changer ca ?
+
+K_rc = np.array([[502.2993846775969, 0, 640/2],  # Param�tres intres�ques de la jevois calcul� � la main... Il faudrait la calibrer proprement pour avoir les vraies valeurs (fixe sur la dur�e de vie du module)
+                [0, 502.2993846775969, 480/2],
+                [0, 0, 1]])
+K_vc = np.array([[500, 0, 640/2],  # Param�tres intres�ques de la camera verticale finale (je sais pas trop ce qui est le mieux, pareil que la jevois vraie peut-�tre ?)
+                [0, 500, 480/2],
+                [0, 0, 1]])
+K_vc_inv = np.linalg.inv(K_vc)
+n = np.array([[0, 0, -1]]).transpose()
+
 class PuckDetector:
     # ###################################################################################################
     ## Constructor
     def __init__(self):
         # Instantiate a JeVois Timer to measure our processing framerate:
         self.timer = jevois.Timer("processing timer", 100, jevois.LOG_INFO)
-        self.colors_thre = {"green": [(42, 70, 100), (70, 255, 255)], "blue": [(95, 100, 100), (120, 255, 255)],
-                            "red": [(175, 100, 100), (180, 255, 255), (0, 100, 100), (10, 255, 255)]}
+        self.colors_thre = {"green": [(42, 60, 80), (90, 255, 255)], "blue": [(95, 100, 100), (120, 255, 255)],
+                            "red": [(140, 100, 80), (180, 255, 255), (0, 100, 100), (10, 255, 255)]}
+        self.color_channel = {"blue": 0, "green":1, "red": 2}
+        self.mean_theshold = {"blue": 0.5, "green":0.5, "red": 0.3}
+        self.color = {"blue": (255, 0, 0), "green": (0, 255, 0), "red": (0, 0, 255)}
+        self.places_offset = [(0, 1, 0, 0), (1, 0, 0, 0), (1, 1, 0, 0)]
+        self.pos = (200, 0)   # (z, tilt), z: height above the table, tilt:looking down:0degrees, looking front: 90degrees (or 1.57 rd)
+        self.H_rc_to_vc = self.compute_rotation_matrix()
+    
+    def compute_rotation_matrix(self):
+        h, tilt = self.pos
+        theta = np.radians(tilt)
+        
+        Rvc_to_rc = np.array([[1, 0, 0],  # A recalculer chaque fois qu'on re�oit un nouveau theta
+                [0, np.cos(theta), np.sin(theta)],
+                [0, -np.sin(theta), np.cos(theta)]])
+        t_vc_to_rc = -Rvc_to_rc.dot(np.array([[0, h * np.tan(theta), V2 - h]]).transpose())  # A recalculer chaque fois qu'on re�oit un nouveau theta ou une nouvelle hauteur
+        disp = Rvc_to_rc - (t_vc_to_rc.dot(n.transpose()) / V2)
+        H_vc_to_rc = K_rc.dot(disp.dot(K_vc_inv))
+        H_rc_to_vc = np.linalg.inv(H_vc_to_rc)
+        return H_rc_to_vc
+        
+        
+
+    def parseSerial(self, str):
+        jevois.LINFO("parseserial received command [{}]".format(str))
+        cmd, args = str.split(" ", maxsplit=1)
+        if cmd == "armothy_pos":
+            pass
+            return self.parsePosMsg(args)
+        return "ERR Unsupported command: {}".format(str)
+    
+    def parsePosMsg(self, args):
+        z, tilt = args.split(" ")
+        z, tilt = float(z), float(tilt)
+        if tilt > 60:
+            tilt = 0
+        self.pos = (z, tilt)
+        self.H_rc_to_vc = self.compute_rotation_matrix()
+        return "Position set at {}".format(self.pos)
 
     def processNoUSB(self, inframe):
         # Get the next camera image (may block until it is captured) and here convert it to OpenCV BGR. If you need a
@@ -37,11 +88,9 @@ class PuckDetector:
         # Start measuring image processing time (NOTE: does not account for input conversion time):
         self.timer.start()
 
-        pucks_color = self.find_pucks(inimg)
-
-        jevois.sendSerial("{}:{}:{}".format(self.serialize_puck_list(pucks_color["red"]),
-                                            self.serialize_puck_list(pucks_color["green"]),
-                                            self.serialize_puck_list(pucks_color["blue"])))
+        pucks_circles = self.find_pucks(inimg)
+        jevois.LINFO("FUUUUCK")
+        jevois.sendSerial("{}".format(self.serialize_puck_list(pucks_circles)))
 
     # ###################################################################################################
     ## Process function with USB output
@@ -53,16 +102,21 @@ class PuckDetector:
         # Start measuring image processing time (NOTE: does not account for input conversion time):
         self.timer.start()
 
-        pucks_color, outimg = self.find_pucks(inimg, with_output=True)
+        pucks_circles, outimg = self.find_pucks(inimg, with_output=True)
 
-        jevois.sendSerial("{}:{}:{}".format(self.serialize_puck_list(pucks_color["red"]),
-                                            self.serialize_puck_list(pucks_color["green"]),
-                                            self.serialize_puck_list(pucks_color["blue"])))
+        jevois.sendSerial("{}".format(self.serialize_puck_list(pucks_circles)))
+        
         # Write a title:
         cv2.putText(outimg, "JeVois PuckDetector", (3, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255))
+        for i, data in enumerate(pucks_circles):
+            x,y,r,avr, col = data
+            cv2.putText(outimg, "{}, {}, {}, {}, {}".format(x,y,r,avr, col), (3, 40 + 20*i), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255))
+        
+
 
         # Write frames/s info from our timer into the edge map (NOTE: does not account for output conversion time):
         fps = self.timer.stop()
+        
         height = outimg.shape[0]
         width = outimg.shape[1]
         cv2.putText(outimg, fps, (3, height - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255))
@@ -71,87 +125,73 @@ class PuckDetector:
         outframe.sendCv(outimg)
 
     @staticmethod
-    def serialize_puck_list(l):
-        s = ""
-        for pt in l:
-            s += str(pt[0]) + "," + str(pt[1]) + ";"
-        return s[:-1]
-
+    def serialize_puck_list(pucks):
+        s = ";".join(["{} {} {} {} {}".format(x,y,r,avr,col) for x,y,r,avr,col in pucks])
+        return s
+    
     def find_pucks(self, inimg, with_output=False):
-        blur = cv2.GaussianBlur(inimg, (7, 7), 0)
-
-        hsv = cv2.cvtColor(blur, cv2.COLOR_BGR2HSV)
+        inimg = self.trans(inimg)
+        bordersize = 120
+        img=cv2.copyMakeBorder(inimg, top=bordersize, bottom=bordersize, left=bordersize, right=bordersize, borderType= cv2.BORDER_CONSTANT, value=[0,0,0])
+        h,w,ch=img.shape
+        out = np.copy(img)
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        cannyHighThresh = 80
+        cannyLowThresh = 20
+        #canny = cv2.Canny(gray, cannyHighThresh, cannyLowThresh)
+        circles = cv2.HoughCircles(gray, cv2.HOUGH_GRADIENT, 1, 200, param1=cannyHighThresh, param2=cannyLowThresh, minRadius=120, maxRadius=180)
+        pucks = []
+        outImg = np.zeros((h,w, 3), np.uint8)
+        outImg[0:h, 0:w] = img[0:h, 0:w]
+        if circles is not None:
+            img_hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)  #convert image to HSV space for color filtering
+            #img_hsv = cv2.medianBlur(img_hsv, 5)
+            circles = np.round(circles[0, :]).astype("int")
+            for i, (x, y, r) in enumerate(circles):
+                mask = np.zeros_like(gray)          #will be the mask that define the atoms
+                mask_of_mask = np.zeros_like(gray)  #will be used to mask the borders on the previous mask
+                cv2.rectangle(mask_of_mask, (bordersize, bordersize), (h+bordersize, w+bordersize), (255), -1)  #mask that exclude the borders
+                cv2.circle(mask, (x,y), r, (255,255,255), -1)  #draw the detected circle on the mask
+                mask = cv2.bitwise_and(mask, mask, mask=mask_of_mask) #exclude the (black) borders from the mask
+                
+                #jevois.LINFO("")
+                for d_color in self.colors_thre.keys():
+                    #filter image on color
+                    #img_hsv = cv2.blur(img_hsv, (5,5)) #cv2.GaussianBlur(img_hsv, (11, 11), 5, 5)
+                    
+                    img_filtered = cv2.inRange(img_hsv, self.colors_thre[d_color][0], self.colors_thre[d_color][1])
+                    if d_color == "red":
+                        img_filtered += cv2.inRange(img_hsv, self.colors_thre[d_color][2], self.colors_thre[d_color][3])
+                    #compute the mean of the filtered image, masked by the circle mask.
+                    #m is the percentage of the detected circle that is of the color d_color
+                    m=cv2.mean(img_filtered, mask=mask)[0]/255
+                    #jevois.LINFO(d_color)
+                    #jevois.LINFO(str(m))
+                    if m > self.mean_theshold[d_color]:
+                        pucks.append((x,y,r,m,d_color))
+                        cv2.circle(outImg, (x, y), r, self.color[d_color], 4)
+                        #debug >>>>>>>>>>>>>>>>>>>>
+                        #if i < 3:
+                        #     imm = cv2.bitwise_and(img_filtered, img_filtered, mask=mask)
+                        #     coco = np.zeros_like(img_hsv)
+                        #     coco[:,:,self.color_channel[d_color]] = imm
+                        #     mulH, mulW, offH, offW = self.places_offset[i]
+                        #     outImg[mulH*h:mulH*h+h, mulW*w:mulW*w+w] = coco
+                        #debug <<<<<<<<<<<<<<<
+                        break
+                else:
+                    #no color where m>mean_theshold, i.e, not the good color
+                    cv2.circle(outImg, (x, y), r, (255, 255, 255), 4)
+                    pass
 
         if with_output:
-            output_img = inimg.copy()
-
-        pucks_color = {}
-
-        for d_color in self.colors_thre.keys():
-            mask = cv2.inRange(hsv, self.colors_thre[d_color][0], self.colors_thre[d_color][1])
-            if d_color == "red":
-                # Red is special since it wraps around H:0
-                mask += cv2.inRange(hsv, self.colors_thre[d_color][2], self.colors_thre[d_color][3])
-
-            res = cv2.bitwise_and(inimg, inimg, mask=mask)
-
-            res_gray = cv2.cvtColor(res, cv2.COLOR_BGR2GRAY)
-
-            kernel = np.ones((10, 10), np.uint8)
-            closed_gray = cv2.morphologyEx(res_gray, cv2.MORPH_CLOSE, kernel)
-
-            contours, h = cv2.findContours(closed_gray, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-            filtered_contours = []
-
-            for c in contours:
-                M = cv2.moments(c)
-                if M['m00'] < 2000:
-                    continue
-                hull = cv2.convexHull(c)
-                hull_area = cv2.contourArea(hull)
-                if float(M['m00']) / hull_area < 0.9:
-                    continue
-                filtered_contours.append(c)
-
-            puck_poses = []
-            for c in filtered_contours:
-                M = cv2.moments(c)
-                puck_poses.append((int(M['m10'] / M['m00']), int(M['m01'] / M['m00'])))
-
-            if with_output:
-                for pt in puck_poses:
-                    cv2.line(output_img, (pt[0] - 5, pt[1]), (pt[0] + 5, pt[1]), (0, 255, 255))
-                    cv2.line(output_img, (pt[0], pt[1] - 5), (pt[0], pt[1] + 5), (255, 255, 0))
-
-            pucks_color[d_color] = []
-            for c in filtered_contours:
-                x, y, w, h = cv2.boundingRect(c)
-                cropped_hsv = hsv[y:y + h, x:x + w].copy()
-                cropped_mask = 255 - cv2.inRange(cropped_hsv, (0, 0, 0), (255, 255, 90))
-                kernel = np.ones((12, 12), np.uint8)
-                cropped_closed = cv2.dilate(cropped_mask, kernel, iterations=1)
-                contours, h = cv2.findContours(cropped_closed, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-                center_contour = None
-                center_contour_m = {'m00': 0}
-                for i, ci in enumerate(contours):
-                    if h[0][i][2] != -1:
-                        continue  # Looking for last in trees (should be looking for max depth...)
-                    M = cv2.moments(ci)
-                    if M['m00'] > center_contour_m['m00']:
-                        center_contour = ci
-                        center_contour_m = M
-                center_pose = (x + int(center_contour_m['m10'] / center_contour_m['m00']),
-                               y + int(center_contour_m['m01'] / center_contour_m['m00']))
-                pucks_color[d_color].append(center_pose)
-
-                if with_output:
-                    color = cv2.cvtColor(np.uint8([[self.colors_thre[d_color][0]]]), cv2.COLOR_HSV2BGR)
-                    cv2.line(output_img, (center_pose[0] - 5, center_pose[1]), (center_pose[0] + 5, center_pose[1]),
-                             color)
-                    cv2.line(output_img, (center_pose[0], center_pose[1] - 5), (center_pose[0], center_pose[1] + 5),
-                             color)
-        if with_output:
-            return pucks_color, output_img
+            return pucks, outImg
         else:
-            return pucks_color
+            return pucks
+                
+    def trans(self, img):
+        warped = cv2.warpPerspective(img, self.H_rc_to_vc, (640, 480))  # The magic happens here
+        return warped
+        
+    
+    

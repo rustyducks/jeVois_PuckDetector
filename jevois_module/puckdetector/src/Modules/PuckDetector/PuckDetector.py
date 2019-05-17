@@ -3,6 +3,7 @@ import cv2
 import numpy as np
 
 
+
 ## Detects pucks for eurobot 2019
 #
 # Add some description of your module here.
@@ -21,18 +22,63 @@ import numpy as np
 # @restrictions None
 # @ingroup modules
 
+V2 = 400     # TODO changer ca ?
+
+K_rc = np.array([[502.2993846775969, 0, 640/2],  # Param�tres intres�ques de la jevois calcul� � la main... Il faudrait la calibrer proprement pour avoir les vraies valeurs (fixe sur la dur�e de vie du module)
+                [0, 502.2993846775969, 480/2],
+                [0, 0, 1]])
+K_vc = np.array([[500, 0, 640/2],  # Param�tres intres�ques de la camera verticale finale (je sais pas trop ce qui est le mieux, pareil que la jevois vraie peut-�tre ?)
+                [0, 500, 480/2],
+                [0, 0, 1]])
+K_vc_inv = np.linalg.inv(K_vc)
+n = np.array([[0, 0, -1]]).transpose()
+
 class PuckDetector:
     # ###################################################################################################
     ## Constructor
     def __init__(self):
         # Instantiate a JeVois Timer to measure our processing framerate:
         self.timer = jevois.Timer("processing timer", 100, jevois.LOG_INFO)
-        self.colors_thre = {"green": [(42, 60, 80), (90, 255, 255)], "blue": [(95, 100, 80), (120, 255, 255)],
-                            "red": [(140, 100, 70), (180, 255, 255), (0, 100, 70), (10, 255, 255)]}
+        self.colors_thre = {"green": [(42, 60, 80), (90, 255, 255)], "blue": [(95, 100, 100), (120, 255, 255)],
+                            "red": [(140, 100, 80), (180, 255, 255), (0, 100, 100), (10, 255, 255)]}
         self.color_channel = {"blue": 0, "green":1, "red": 2}
-        self.mean_theshold = {"blue": 0.4, "green":0.4, "red": 0.4}
+        self.mean_theshold = {"blue": 0.5, "green":0.5, "red": 0.3}
         self.color = {"blue": (255, 0, 0), "green": (0, 255, 0), "red": (0, 0, 255)}
         self.places_offset = [(0, 1, 0, 0), (1, 0, 0, 0), (1, 1, 0, 0)]
+        self.pos = (200, 0)   # (z, tilt), z: height above the table, tilt:looking down:0degrees, looking front: 90degrees (or 1.57 rd)
+        self.H_rc_to_vc = self.compute_rotation_matrix()
+    
+    def compute_rotation_matrix(self):
+        h, tilt = self.pos
+        theta = np.radians(tilt)
+        
+        Rvc_to_rc = np.array([[1, 0, 0],  # A recalculer chaque fois qu'on re�oit un nouveau theta
+                [0, np.cos(theta), np.sin(theta)],
+                [0, -np.sin(theta), np.cos(theta)]])
+        t_vc_to_rc = -Rvc_to_rc.dot(np.array([[0, h * np.tan(theta), V2 - h]]).transpose())  # A recalculer chaque fois qu'on re�oit un nouveau theta ou une nouvelle hauteur
+        disp = Rvc_to_rc - (t_vc_to_rc.dot(n.transpose()) / V2)
+        H_vc_to_rc = K_rc.dot(disp.dot(K_vc_inv))
+        H_rc_to_vc = np.linalg.inv(H_vc_to_rc)
+        return H_rc_to_vc
+        
+        
+
+    def parseSerial(self, str):
+        jevois.LINFO("parseserial received command [{}]".format(str))
+        cmd, args = str.split(" ", maxsplit=1)
+        if cmd == "armothy_pos":
+            pass
+            return self.parsePosMsg(args)
+        return "ERR Unsupported command: {}".format(str)
+    
+    def parsePosMsg(self, args):
+        z, tilt = args.split(" ")
+        z, tilt = float(z), float(tilt)
+        if tilt > 60:
+            tilt = 0
+        self.pos = (z, tilt)
+        self.H_rc_to_vc = self.compute_rotation_matrix()
+        return "Position set at {}".format(self.pos)
 
     def processNoUSB(self, inframe):
         # Get the next camera image (may block until it is captured) and here convert it to OpenCV BGR. If you need a
@@ -84,17 +130,16 @@ class PuckDetector:
         return s
     
     def find_pucks(self, inimg, with_output=False):
-        #inimg = self.trans(inimg)
-        bordersize = 120#0
+        inimg = self.trans(inimg)
+        bordersize = 120
         img=cv2.copyMakeBorder(inimg, top=bordersize, bottom=bordersize, left=bordersize, right=bordersize, borderType= cv2.BORDER_CONSTANT, value=[0,0,0])
         h,w,ch=img.shape
         out = np.copy(img)
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         cannyHighThresh = 80
         cannyLowThresh = 20
-        canny = cv2.Canny(gray, cannyHighThresh, cannyLowThresh)
-        circles = cv2.HoughCircles(gray, cv2.HOUGH_GRADIENT, 1, minDist=250, param1=cannyHighThresh, param2=cannyLowThresh, minRadius=150, maxRadius=180)
-        #circles = cv2.HoughCircles(gray, cv2.HOUGH_GRADIENT, 1, minDist=100, param1=cannyHighThresh, param2=cannyLowThresh, minRadius=50, maxRadius=120)
+        #canny = cv2.Canny(gray, cannyHighThresh, cannyLowThresh)
+        circles = cv2.HoughCircles(gray, cv2.HOUGH_GRADIENT, 1, 200, param1=cannyHighThresh, param2=cannyLowThresh, minRadius=120, maxRadius=180)
         pucks = []
         outImg = np.zeros((h,w, 3), np.uint8)
         outImg[0:h, 0:w] = img[0:h, 0:w]
@@ -123,7 +168,7 @@ class PuckDetector:
                     #jevois.LINFO(d_color)
                     #jevois.LINFO(str(m))
                     if m > self.mean_theshold[d_color]:
-                        pucks.append((x-bordersize,y-bordersize,r,m,d_color))
+                        pucks.append((x,y,r,m,d_color))
                         cv2.circle(outImg, (x, y), r, self.color[d_color], 4)
                         #debug >>>>>>>>>>>>>>>>>>>>
                         #if i < 3:
@@ -144,20 +189,8 @@ class PuckDetector:
         else:
             return pucks
                 
-    def trans(self, image):
-        maxWidth = 200
-        maxHeight = 200
-        dst = np.array([
-        [0, 0],
-        [640, 0],
-        [640, 480],
-        [0, 480]], dtype = "float32")
-        
-        #src = np.array([(139, 51), (526, 50), (594, 266), (78, 266)], dtype = "float32")
-        src = np.array([(0, 0), (640, 0), (940, 480), (-300, 480)], dtype = "float32")
-        M = cv2.getPerspectiveTransform(src, dst)
-        jevois.LINFO(str(M))
-        warped = cv2.warpPerspective(image, M, (640, 480))
+    def trans(self, img):
+        warped = cv2.warpPerspective(img, self.H_rc_to_vc, (640, 480))  # The magic happens here
         return warped
         
     
